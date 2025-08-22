@@ -1,10 +1,9 @@
 [app]
-#fast_llm = "vllm/fast/Qwen/Qwen3-1.7B"
-fast_llm = "openai/gpt-4.1-mini"
-quality_llm = "vllm/Qwen/Qwen3-30B-A3B"
-#quality_llm = "ollama/myqwen3:30b"
-reasoning_llm = "vllm/Qwen/Qwen3-14B"
-planning_llm = "vllm/Qwen/Qwen3-14B"
+fast_llm = "vllm/fast/RedHatAI/phi-4-quantized.w8a8
+#fast_llm = "openai/gpt-4.1-mini"
+quality_llm = "vllm/Bedovyy/Qwen3-32B"
+reasoning_llm = ""
+planning_llm = ""
 
 [completion]
 provider = "r2r"
@@ -41,7 +40,6 @@ kg_concurrency_limit = 8
 
 [embedding]
 provider = "huggingface"
-#base_model = "granite-embedding:30m"
 base_model = "tei"
 base_dimension = 768
 batch_size = 32
@@ -50,7 +48,6 @@ concurrent_request_limit = 8
 
 [completion_embedding]
 provider = "huggingface"
-#base_model = "granite-embedding:30m"
 base_model = "tei"
 base_dimension = 768
 batch_size = 32
@@ -60,7 +57,7 @@ concurrent_request_limit = 8
 [database]
 
   [database.graph_creation_settings]
-    entity_types = ["ModelArchitecture"] # if empty, all entities are extracted
+    entity_types = [] # if empty, all entities are extracted
     relation_types = [] # if empty, all relations are extracted
     automatic_deduplication = true # enable automatic deduplication of entities
 
