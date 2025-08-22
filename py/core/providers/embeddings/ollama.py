@@ -33,7 +33,7 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
 
         self.base_model = config.base_model
         self.base_dimension = config.base_dimension
-        self.base_url = os.getenv("OLLAMA_API_BASE")
+        self.base_url = os.getenv("OLLAMA_API_BASE").replace("/v1", "")
         logger.info(
             f"Using Ollama API base URL: {self.base_url or 'http://127.0.0.1:11434'}"
         )

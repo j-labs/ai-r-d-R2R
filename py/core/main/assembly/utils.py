@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+import httpx
+
 logger = logging.getLogger()
 
 
@@ -17,6 +19,12 @@ def install_user_tool_dependencies(user_tools_path: str):
             f"Found user requirements file at: {requirements_path}. Attempting to install user tool dependencies..."
         )
         try:
+            # Check if PyPI is reachable via http
+            resp = httpx.get("https://pypi.org")
+            logger.info(
+                f"PyPI is {'non-' if resp.status_code != 200 else ''}reachable."
+            )
+            resp.raise_for_status()
             # Use subprocess to run pip install
             result = subprocess.run(
                 [
@@ -58,6 +66,11 @@ def install_user_tool_dependencies(user_tools_path: str):
         except FileNotFoundError:
             logger.error(
                 f"Error: '{sys.executable} -m pip' command not found. Make sure pip is installed in the Python environment."
+            )
+            raise
+        except httpx.HTTPError:
+            logger.error(
+                "Error: Unable to reach PyPI. Make sure your network is configured correctly."
             )
             raise
         except Exception as e:

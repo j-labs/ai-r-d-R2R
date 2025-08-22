@@ -47,6 +47,7 @@ from core.providers import (
     SupabaseAuthProvider,
     UnstructuredIngestionConfig,
     UnstructuredIngestionProvider,
+    HugginfaceEmbeddingProvider,
 )
 
 from ..abstractions import R2RProviders
@@ -255,6 +256,7 @@ class R2RProviderFactory:
         LiteLLMEmbeddingProvider
         | OllamaEmbeddingProvider
         | OpenAIEmbeddingProvider
+        | HugginfaceEmbeddingProvider
     ):
         embedding_provider: Optional[EmbeddingProvider] = None
 
@@ -276,6 +278,11 @@ class R2RProviderFactory:
             from core.providers import OllamaEmbeddingProvider
 
             embedding_provider = OllamaEmbeddingProvider(embedding)
+
+        elif embedding.provider == "huggingface":
+            from core.providers import HugginfaceEmbeddingProvider
+
+            embedding_provider = HugginfaceEmbeddingProvider(embedding)
 
         else:
             raise ValueError(
@@ -369,6 +376,7 @@ class R2RProviderFactory:
             LiteLLMEmbeddingProvider
             | OpenAIEmbeddingProvider
             | OllamaEmbeddingProvider
+            | HugginfaceEmbeddingProvider
         ] = None,
         ingestion_provider_override: Optional[
             R2RIngestionProvider | UnstructuredIngestionProvider

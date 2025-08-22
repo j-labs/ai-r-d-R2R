@@ -1546,7 +1546,7 @@ class RetrievalService(Service):
                         # Generate conversation name if needed
                         if needs_initial_conversation_name:
                             try:
-                                prompt = f"Generate a succinct name (3-6 words) for this conversation, given the first input mesasge here = {str(message.to_dict())}"
+                                prompt = f"Generate a succinct name (3-6 words) for this conversation, given the first input mesasge here = {str(message.model_dump())}"
                                 conversation_name = (
                                     (
                                         await self.providers.llm.aget_completion(

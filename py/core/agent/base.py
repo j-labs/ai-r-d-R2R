@@ -7,6 +7,7 @@ from typing import AsyncGenerator, Optional, Tuple
 
 from core.base import AsyncSyncMeta, LLMChatCompletion, Message, syncable
 from core.base.agent import Agent, Conversation
+from core.base.agent.agent import fix_malformed_json
 from core.utils import (
     CitationTracker,
     SearchResultsCollector,
@@ -119,6 +120,7 @@ class R2RAgent(Agent, metaclass=CombinedMeta):
             iterations_count += 1
             messages_list = await self.conversation.get_messages()
             generation_config = self.get_generation_config(messages_list[-1])
+            logger.info(f"R2RAgent generation_config: {generation_config}")
             response = await self.llm_provider.aget_completion(
                 messages_list,
                 generation_config,
@@ -154,6 +156,7 @@ class R2RAgent(Agent, metaclass=CombinedMeta):
         self, response: LLMChatCompletion, *args, **kwargs
     ) -> None:
         if not self._completed:
+            response = extract_thinking_section(response)
             message = response.choices[0].message
             finish_reason = response.choices[0].finish_reason
 
@@ -524,7 +527,9 @@ class R2RStreamingAgent(R2RAgent):
                                         ] += tc.function.arguments
 
                         # 5) If the stream signals we should handle "tool_calls"
-                        if finish_reason == "tool_calls":
+                        if finish_reason in ("tool_calls", "stop") and len(
+                            pending_tool_calls
+                        ):
                             # Handle thinking if present
                             await self._handle_thinking(
                                 thinking_signatures, accumulated_thinking
@@ -533,12 +538,14 @@ class R2RStreamingAgent(R2RAgent):
                             calls_list = []
                             for idx in sorted(pending_tool_calls.keys()):
                                 cinfo = pending_tool_calls[idx]
+                                # Fix malformed JSON in arguments before using them
+                                fixed_arguments = fix_malformed_json(cinfo["arguments"])
                                 calls_list.append(
                                     {
                                         "tool_call_id": cinfo["id"]
                                         or f"call_{idx}",
                                         "name": cinfo["name"],
-                                        "arguments": cinfo["arguments"],
+                                        "arguments": fixed_arguments,
                                     }
                                 )
 
@@ -1482,3 +1489,63 @@ class R2RXMLToolsAgent(R2RAgent):
                 tool_params = {"value": raw_params}
 
         return tool_name, tool_params
+
+
+def extract_thinking_section(
+        llm_response: LLMChatCompletion,
+        thinking_start: str = "<think>",
+        thinking_end: str = "</think>"
+) -> LLMChatCompletion:
+    """
+    Extracts the "thinking" section from an LLM response based on the specified start
+    and end markers.
+
+    This function locates and extracts a portion of the given LLM response's content
+    that is enclosed between the provided thinking_start and thinking_end markers.
+    If the markers are not found or not in the correct order, it will return the
+    original LLM response without modification.
+
+    Arguments:
+        llm_response: LLMChatCompletion
+            The full response object from a language model.
+        thinking_start: str
+            The marker indicating the beginning of the "thinking" section (default is "<think>").
+        thinking_end: str
+            The marker indicating the end of the "thinking" section (default is "</think>").
+
+    Returns:
+        LLMChatCompletion
+            The modified LLM response with thinking section extracted from content and
+            added to reasoning_content field.
+    """
+    if not llm_response or not llm_response.choices:
+        return llm_response
+
+    # Create a copy of the response to avoid modifying the original
+    modified_response = llm_response.model_copy(deep=True)
+
+    for choice in modified_response.choices:
+        message = choice.message
+        if not message.content or not isinstance(message.content, str):
+            continue
+
+        content = message.content
+        start_idx = content.find(thinking_start)
+        end_idx = content.find(thinking_end)
+
+        # If either marker is not found or they're in the wrong order
+        if start_idx == -1 or end_idx == -1 or start_idx > end_idx:
+            continue
+
+        thinking_section = content[start_idx + len(thinking_start):end_idx].strip()
+
+        non_thinking = (
+                content[:start_idx].strip() + " " +
+                content[end_idx + len(thinking_end):].strip()
+        ).strip()
+
+        # Update the message content and reasoning_content
+        message.content = non_thinking
+        message.reasoning_content = thinking_section
+
+    return modified_response

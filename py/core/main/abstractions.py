@@ -18,6 +18,7 @@ from core.providers import (
     OllamaEmbeddingProvider,
     OpenAICompletionProvider,
     OpenAIEmbeddingProvider,
+    HugginfaceEmbeddingProvider,
     PostgresDatabaseProvider,
     PostgresFileProvider,
     R2RAuthProvider,
@@ -60,12 +61,14 @@ class R2RProviders(BaseModel):
         LiteLLMEmbeddingProvider
         | OpenAIEmbeddingProvider
         | OllamaEmbeddingProvider
+        | HugginfaceEmbeddingProvider
     )
     file: PostgresFileProvider | S3FileProvider
     completion_embedding: (
         LiteLLMEmbeddingProvider
         | OpenAIEmbeddingProvider
         | OllamaEmbeddingProvider
+        | HugginfaceEmbeddingProvider
     )
     llm: (
         AnthropicCompletionProvider

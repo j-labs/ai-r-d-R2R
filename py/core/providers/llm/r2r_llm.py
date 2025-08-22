@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Any
 
 from core.base.abstractions import GenerationConfig
@@ -7,7 +8,9 @@ from core.base.providers.llm import CompletionConfig, CompletionProvider
 from .anthropic import AnthropicCompletionProvider
 from .azure_foundry import AzureFoundryCompletionProvider
 from .litellm import LiteLLMCompletionProvider
+from .ollama_chat import OllamaCompletionProvider
 from .openai import OpenAICompletionProvider
+from .vllm_chat import VLLMCompletionProvider
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,13 @@ class R2RCompletionProvider(CompletionProvider):
         self._azure_foundry_provider = AzureFoundryCompletionProvider(
             self.config, *args, **kwargs
         )  # New provider
+        self._ollama_provider = OllamaCompletionProvider(
+            self.config, *args, **kwargs
+        )  # New provider
+        if os.getenv("VLLM_QUALITY_LLM") or os.getenv("VLLM_FAST_LLM"):
+            self._vllm_povider = VLLMCompletionProvider(
+                self.config, *args, **kwargs
+            )  # New provider
 
         logger.debug(
             "R2RCompletionProvider initialized with OpenAI, Anthropic, LiteLLM, and Azure Foundry sub-providers."
@@ -59,12 +69,20 @@ class R2RCompletionProvider(CompletionProvider):
         if model_name.startswith("azure-foundry/"):
             return self._azure_foundry_provider
 
+        # Route to Ollama explicitly.
+        if model_name.startswith("ollama/"):
+            return self._ollama_provider
+
+        # Route to Huggingface explicitly.
+        if model_name.startswith("vllm/"):
+            return self._vllm_povider
+
         # OpenAI-like prefixes.
         openai_like_prefixes = [
             "openai/",
             "azure/",
             "deepseek/",
-            "ollama/",
+            # "ollama/",
             "lmstudio/",
         ]
         if (
@@ -74,9 +92,11 @@ class R2RCompletionProvider(CompletionProvider):
             )
             or "/" not in model_name
         ):
+            logger.info(
+                ">>> R2RCompletionProvider: model_name determines sub-provider to use: OpenAI."
+            )
             return self._openai_provider
 
-        # Fallback to LiteLLM.
         return self._litellm_provider
 
     async def _execute_task(self, task: dict[str, Any]):

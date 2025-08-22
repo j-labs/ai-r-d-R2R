@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime
 from json import JSONDecodeError
@@ -136,7 +137,7 @@ class Agent(ABC):
         if (
             last_message["role"] in ["tool", "function"]
             and last_message["content"] != ""
-            and "ollama" in self.rag_generation_config.model
+            # and "ollama" in self.rag_generation_config.model
             or not self.config.include_tools
         ):
             return GenerationConfig(
@@ -180,17 +181,18 @@ class Agent(ABC):
         *args,
         **kwargs,
     ) -> ToolResult:
-        logger.debug(
-            f"Calling function: {function_name}, args: {function_arguments}, tool_id: {tool_id}"
+        fixed_args = fix_malformed_json(function_arguments)
+        logger.info(
+            f"Calling function: {function_name}, args: {fixed_args}, tool_id: {tool_id}"
         )
         if tool := next(
             (t for t in self.tools if t.name == function_name), None
         ):
             try:
-                function_args = json.loads(function_arguments)
+                function_args = json.loads(fixed_args)
 
             except JSONDecodeError as e:
-                error_message = f"Calling the requested tool '{function_name}' with arguments {function_arguments} failed with `JSONDecodeError`."
+                error_message = f"Calling the requested tool '{function_name}' with arguments {function_arguments} failed with `JSONDecodeError` {e!r}."
                 if save_messages:
                     await self.conversation.add_message(
                         Message(
@@ -200,6 +202,12 @@ class Agent(ABC):
                             tool_call_id=tool_id,
                         )
                     )
+                
+                # Return early with error result when JSON parsing fails
+                return ToolResult(
+                    raw_result=error_message,
+                    llm_formatted_result=error_message,
+                )
 
             merged_kwargs = {**kwargs, **function_args}
             try:
@@ -296,3 +304,57 @@ class RAGAgentConfig(AgentConfig):
             "tool_names", None
         )
         return cls(**filtered_kwargs)  # type: ignore
+
+
+def fix_malformed_json(json_string: str, default_value: str = "") -> str:
+    """
+    Fix malformed JSON strings where keys have missing values or truncated values.
+
+    Args:
+        json_string: The potentially malformed JSON string
+        default_value: The default value to assign to keys with missing values
+
+    Returns:
+        A valid JSON string with missing values filled in
+    """
+    try:
+        # First, try to parse as-is in case it's already valid
+        json.loads(json_string)
+        return json_string
+    except json.JSONDecodeError:
+        logger.warning(f"Fixing malformed JSON: {json_string}")
+        pass
+
+    # Fix truncated null values (e.g., "nul" -> "null")
+    fixed_json = re.sub(r':\s*nul(?!\w)', ': null', json_string)
+    
+    # Fix truncated true values (e.g., "tru" -> "true")
+    fixed_json = re.sub(r':\s*tru(?!\w)', ': true', fixed_json)
+    
+    # Fix truncated false values (e.g., "fals" -> "false")
+    fixed_json = re.sub(r':\s*fals(?!\w)', ': false', fixed_json)
+
+    # Fix missing values (key followed by comma or closing brace/bracket)
+    fixed_json = re.sub(r'("[\w_]+"):\s*([,\]\}])', rf'\1: "{default_value}"\2', fixed_json)
+
+    # Add missing closing braces/brackets if the JSON appears incomplete
+    # Count opening and closing braces/brackets
+    open_braces = fixed_json.count('{')
+    close_braces = fixed_json.count('}')
+    open_brackets = fixed_json.count('[')
+    close_brackets = fixed_json.count(']')
+    
+    # Add missing closing braces
+    if open_braces > close_braces:
+        fixed_json += '}' * (open_braces - close_braces)
+    
+    # Add missing closing brackets
+    if open_brackets > close_brackets:
+        fixed_json += ']' * (open_brackets - close_brackets)
+
+    # Clean up any trailing commas before closing braces/brackets
+    fixed_json = re.sub(r',(\s*[\]\}])', r'\1', fixed_json)
+
+    logger.warning(f"Fixed malformed JSON: {fixed_json}")
+
+    return fixed_json

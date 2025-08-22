@@ -36,7 +36,7 @@ class CompletionConfig(ProviderConfig):
 
     @property
     def supported_providers(self) -> list[str]:
-        return ["anthropic", "litellm", "openai", "r2r"]
+        return ["anthropic", "litellm", "openai", "r2r", "ollama"]
 
 
 class CompletionProvider(Provider):
@@ -178,10 +178,11 @@ class CompletionProvider(Provider):
             "generation_config": generation_config,
             "kwargs": kwargs,
         }
+        task["generation_config"].stream = False
         response = await self._execute_with_backoff_async(
             task=task, apply_timeout=apply_timeout
         )
-        return LLMChatCompletion(**response.dict())
+        return LLMChatCompletion(**response.model_dump())
 
     async def aget_completion_stream(
         self,
