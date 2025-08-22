@@ -13,7 +13,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # Create the /app/py directory
 RUN mkdir -p /app/py
 WORKDIR /app/py
-COPY pyproject.toml ./
+COPY py/pyproject.toml ./
 RUN pip install -e ".[core]" && \
     pip install gunicorn uvicorn pydantic
 
@@ -36,7 +36,9 @@ COPY --from=builder /usr/local /usr/local
 WORKDIR /app
 
 # Copy the rest of your source code
-COPY . /app
+COPY ./py ./
+COPY ./py/r2r/r2r.toml ./
+COPY ./docker/user_tools ./user_tools
 
 # Expose environment variables and port
 ARG R2R_PORT=8000
