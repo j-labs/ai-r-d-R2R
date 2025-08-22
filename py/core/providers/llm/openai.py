@@ -15,8 +15,8 @@ logger = logging.getLogger()
 class OpenAICompletionProvider(CompletionProvider):
     def __init__(self, config: CompletionConfig, *args, **kwargs) -> None:
         super().__init__(config)
-        self.openai_client = None
-        self.async_openai_client = None
+        self.openai_client: OpenAI | None = None
+        self.async_openai_client: AsyncOpenAI | None = None
         self.azure_client = None
         self.async_azure_client = None
         self.deepseek_client = None
@@ -75,6 +75,9 @@ class OpenAICompletionProvider(CompletionProvider):
         ollama_api_base = os.getenv(
             "OLLAMA_API_BASE", "http://localhost:11434/v1"
         )
+        if not ollama_api_base.endswith("/v1"):
+            ollama_api_base += "/v1"
+
         if ollama_api_base:
             self.ollama_client = OpenAI(
                 api_key=os.getenv("OLLAMA_API_KEY", "dummy"),
@@ -400,17 +403,18 @@ class OpenAICompletionProvider(CompletionProvider):
         model_str = generation_config.model or ""
 
         if any(
-            model_prefix in model_str.lower()
-            for model_prefix in ["o1", "o3", "gpt-5"]
-        ):
+                model_prefix in model_str.lower()
+                for model_prefix in ["o1", "o3", "gpt-5"]
+         ):
+            args["max_tokens"] = max(
+                generation_config.max_tokens_to_sample, 4096
+            )  # somehow R2R forces 1024
+            args["temperature"] = generation_config.temperature
+            args["top_p"] = generation_config.top_p
+        else:
             args["max_completion_tokens"] = (
                 generation_config.max_tokens_to_sample
             )
-
-        else:
-            args["max_tokens"] = generation_config.max_tokens_to_sample
-            args["temperature"] = generation_config.temperature
-            args["top_p"] = generation_config.top_p
 
         if generation_config.reasoning_effort is not None:
             args["reasoning_effort"] = generation_config.reasoning_effort
@@ -467,6 +471,7 @@ class OpenAICompletionProvider(CompletionProvider):
                 )  # Remove model before passing args
                 response = await client.complete(**args)
             else:
+                client: AsyncOpenAI = client
                 response = await client.chat.completions.create(**args)
             logger.debug("Async task executed successfully")
             return response
