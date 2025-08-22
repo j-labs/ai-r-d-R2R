@@ -1,0 +1,71 @@
+[app]
+#fast_llm = "vllm/fast/Qwen/Qwen3-1.7B"
+fast_llm = "openai/gpt-4.1-mini"
+quality_llm = "vllm/Qwen/Qwen3-30B-A3B"
+#quality_llm = "ollama/myqwen3:30b"
+reasoning_llm = "vllm/Qwen/Qwen3-14B"
+planning_llm = "vllm/Qwen/Qwen3-14B"
+
+[completion]
+provider = "r2r"
+concurrent_request_limit = 8
+
+    [completion.generation_config]
+    extended_thinking = false
+    top_p = 0.5
+    stream = true
+    temperature = 0.6
+    max_tokens_to_sample = 4000
+
+[ingestion]
+provider = "unstructured_local"
+ingestion_mode="fast"
+chunking_strategy = "basic"
+chunk_size = 1024
+chunk_overlap = 512
+document_summary_max_length = 2_048
+new_after_n_chars = 1_024
+max_characters = 2_048
+combine_under_n_chars = 512
+overlap = 256
+skip_document_summary = false
+
+    [ingestion.extra_parsers]
+    pdf = ["zerox", "ocr"]
+
+[orchestration]
+provider = "hatchet"
+kg_creation_concurrency_limit = 8
+ingestion_concurrency_limit = 8
+kg_concurrency_limit = 8
+
+[embedding]
+provider = "huggingface"
+#base_model = "granite-embedding:30m"
+base_model = "tei"
+base_dimension = 768
+batch_size = 32
+add_title_as_prefix = true
+concurrent_request_limit = 8
+
+[completion_embedding]
+provider = "huggingface"
+#base_model = "granite-embedding:30m"
+base_model = "tei"
+base_dimension = 768
+batch_size = 32
+add_title_as_prefix = true
+concurrent_request_limit = 8
+
+[database]
+
+  [database.graph_creation_settings]
+    entity_types = ["ModelArchitecture"] # if empty, all entities are extracted
+    relation_types = [] # if empty, all relations are extracted
+    automatic_deduplication = true # enable automatic deduplication of entities
+
+  [database.graph_enrichment_settings]
+    graph_communities_prompt = "graph_communities"
+
+[agent]
+rag_tools = ["arxiv_search", "document_statuses"]
