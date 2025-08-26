@@ -49,6 +49,11 @@ jobs:
             echo "image_tag=bleeding" >> $GITHUB_OUTPUT
           fi
 
+      - name: Convert repository name to lowercase
+        id: repo
+        run: |
+          echo "repository_lowercase=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -56,6 +61,6 @@ jobs:
           file: Dockerfile.standalone
           push: true
           platforms: linux/amd64
-          tags: ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.image_tag }}
+          tags: ghcr.io/${{ steps.repo.outputs.repository_lowercase }}:${{ steps.tag.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
