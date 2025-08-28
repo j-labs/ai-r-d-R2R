@@ -14,9 +14,9 @@ from shared import AggregateSearchResult
 from shared.api.models import IngestionResponse, WrappedIngestionResponse
 from .utils import async_timeout
 
-ARXIV_SLEEP = 0.5
-R2R_SLEEP = 0.5
-ARXIV_TIMEOUT = 45  # seconds
+ARXIV_SLEEP = float(os.getenv("ARXIV_SLEEP", "0.5"))
+R2R_SLEEP = float(os.getenv("R2R_INGESTION_SLEEP", "0.5"))
+ARXIV_TIMEOUT = int(os.getenv("ARXIV_TIMEOUT", "45"))  # seconds
 
 
 class ArxivSearchResult(BaseModel):
