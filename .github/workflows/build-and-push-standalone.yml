@@ -44,6 +44,17 @@ jobs:
         run: |
           gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
 
+      - name: Who am I?
+        run: |
+          gcloud auth list --filter=status:ACTIVE --format='value(account)'
+          gcloud projects get-iam-policy ${{ vars.PROJECT_ID }} --format='flattened(bindings[].role,bindings[].members)' | grep ${{ vars.GOOGLE_SERVICE_ACCOUNT }} || true
+
+      - name: Verify GAR repository exists
+        run: |
+          gcloud artifacts repositories describe "${{ env.GAR_REPOSITORY }}" \
+            --location="${{ env.GAR_LOCATION }}" \
+            --project="${{ vars.PROJECT_ID }}"
+
       - name: Docker meta (tags & labels)
         id: meta
         uses: docker/metadata-action@v5
