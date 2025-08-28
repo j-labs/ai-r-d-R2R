@@ -59,15 +59,15 @@ class HugginfaceEmbeddingProvider(EmbeddingProvider):
         self.async_client = AsyncOpenAI(base_url=base_url)
 
         # Assert availability
-        try:
-            self.client.embeddings.create(input=["test"], model="tei")
-            logger.info(
-                f"Successfully connected to Huggingface TEI server at {base_url}."
-            )
-        except Exception as e:
-            raise ValueError(
-                f"Error initializing HuggingfaceEmbeddingProvider: {e!r}"
-            ) from e
+        # try:
+        #     self.client.embeddings.create(input=["test"], model="tei")
+        #     logger.info(
+        #         f"Successfully connected to Huggingface TEI server at {base_url}."
+        #     )
+        # except Exception as e:
+        #     raise ValueError(
+        #         f"Error initializing HuggingfaceEmbeddingProvider: {e!r}"
+        #     ) from e
 
         # Model handling: mirror HF chat provider behavior by trimming namespace
         self.base_model = (
