@@ -39,7 +39,7 @@ jobs:
         with:
           project_id: ${{ vars.PROJECT_ID }}
           workload_identity_provider: projects/159622693030/locations/global/workloadIdentityPools/ga-pool/providers/ai-r-d-provider
-          service_account: ${{ vars.GOOGLE_SERVICE_ACCOUNT }}
+          service_account: "${{ vars.GOOGLE_SERVICE_ACCOUNT }}"
 
       - name: Configure Docker to use gcloud as a credential helper
         run: |
