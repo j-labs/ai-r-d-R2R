@@ -1,0 +1,336 @@
+import asyncio
+import os
+import re
+import shlex
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import ClassVar, Optional
+
+from core import logger
+from pydantic import BaseModel
+from uuid import UUID
+from r2r import Tool, R2RAsyncClient
+from shared import AggregateSearchResult
+from shared.api.models import IngestionResponse, WrappedIngestionResponse
+
+from .utils import async_timeout
+
+# Defaults and timeouts
+GIT_TIMEOUT = int(os.getenv("R2R_GIT_TIMEOUT", "120"))  # seconds
+R2R_SLEEP = float(os.getenv("R2R_INGESTION_SLEEP", "0.25"))
+MAX_CONCURRENCY = int(os.getenv("R2R_INGESTION_CONCURRENCY", "10"))
+DEFAULT_DEST = os.getenv("R2R_GIT_DEST", "/tmp/r2r_repos")
+
+
+@dataclass
+class _RepoInfo:
+    repo_url: str
+    branch: Optional[str]
+    local_dir: Path
+    commit_hash: Optional[str] = None
+
+
+class GitIngestResult(BaseModel):
+    file_path: str
+    repo_url: str
+    branch: Optional[str] = None
+    commit_hash: Optional[str] = None
+    ingestion_response: Optional[IngestionResponse] = None
+    error: Optional[str] = None
+
+
+class GitRepoIngest(Tool):
+    """
+    Clone (if missing) or pull (if exists) a Git repository and ingest all Markdown (.md) files
+    into the R2R database.
+
+    Capabilities:
+    - Clone or update a repository from a generic Git host (GitHub/Bitbucket/etc.)
+    - Select branch to checkout
+    - Find and ingest all Markdown files using R2R's ingestion API
+    - Optionally target a specific collection by ID or name
+
+    Usage notes:
+    - Ensure R2R API base URL and auth are configured as for other tools.
+    - For large repositories, ingestion is concurrent and rate-limited by env R2R_INGESTION_CONCURRENCY.
+    - You can restrict files via include_glob / exclude_glob.
+    """
+
+    r2r_client: ClassVar[R2RAsyncClient] = R2RAsyncClient()
+    r2r_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(MAX_CONCURRENCY)
+
+    def __init__(self):
+        super().__init__(
+            name="git_repo_ingest",
+            description=(
+                "Clone or update a Git repository and ingest all Markdown (.md) files into R2R. "
+                "Use this to sync documentation / blogpost repos (GitHub/Bitbucket/etc.) with the R2R knowledge base."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "repo_url": {
+                        "type": "string",
+                        "description": "Git repository URL (HTTPS or SSH)",
+                    },
+                    "branch": {
+                        "oneOf": [{"type": "string"}, {"type": "null"}],
+                        "description": "Branch to checkout (default repo default)",
+                    },
+                    "dest_path": {
+                        "oneOf": [{"type": "string"}, {"type": "null"}],
+                        "description": f"Local destination directory (default {DEFAULT_DEST})",
+                    },
+                    "include_glob": {
+                        "type": "string",
+                        "description": "Glob pattern to include (default '**/*.md')",
+                    },
+                    "exclude_glob": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                            {"type": "null"},
+                        ],
+                        "description": "Glob(s) to exclude (optional)",
+                    },
+                    "collection_id": {
+                        "oneOf": [{"type": "string"}, {"type": "null"}],
+                        "description": "Target collection ID to attach documents to (optional)",
+                    },
+                    "collection_name": {
+                        "oneOf": [{"type": "string"}, {"type": "null"}],
+                        "description": "Target collection name (will be created if missing)",
+                    },
+                    "metadata": {
+                        "oneOf": [
+                            {"type": "object"},
+                            {"type": "null"}
+                        ],
+                        "description": "Optional metadata to attach to each document",
+                    },
+                },
+                "required": ["repo_url"],
+            },
+            results_function=self.execute,
+            llm_format_function=None,
+        )
+
+    @staticmethod
+    def _repo_dir_from_url(repo_url: str) -> str:
+        name = repo_url.rstrip("/").split("/")[-1]
+        # strip .git if present
+        if name.endswith(".git"):
+            name = name[:-4]
+        # sanitize to filesystem-safe
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+        return name
+
+    @staticmethod
+    def _is_git_repo(path: Path) -> bool:
+        return (path / ".git").exists()
+
+    @staticmethod
+    def _run_git(cmd: list[str], cwd: Optional[Path] = None, timeout: int = GIT_TIMEOUT) -> str:
+        logger.debug(f"Running git command: {' '.join(shlex.quote(c) for c in cmd)} in {cwd}")
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            text=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"Git command failed: {' '.join(cmd)}\nSTDERR: {proc.stderr.strip()}")
+        return proc.stdout.strip()
+
+    @classmethod
+    async def _clone_or_update_repo(
+        cls, repo_url: str, branch: Optional[str], dest_path: Optional[str]
+    ) -> _RepoInfo:
+        base_dir = Path(dest_path or DEFAULT_DEST)
+        base_dir.mkdir(parents=True, exist_ok=True)
+        repo_dir = base_dir / cls._repo_dir_from_url(repo_url)
+
+        if repo_dir.exists() and cls._is_git_repo(repo_dir):
+            # update
+            logger.info(f"Updating existing repo at {repo_dir}")
+            await asyncio.to_thread(cls._run_git, ["git", "fetch", "--all"], repo_dir)
+            if branch:
+                # ensure branch exists locally
+                await asyncio.to_thread(cls._run_git, ["git", "checkout", branch], repo_dir)
+                await asyncio.to_thread(cls._run_git, ["git", "pull", "origin", branch], repo_dir)
+            else:
+                await asyncio.to_thread(cls._run_git, ["git", "pull"], repo_dir)
+        else:
+            # clone
+            logger.info(f"Cloning repo {repo_url} into {repo_dir}")
+            cmd = ["git", "clone", repo_url, str(repo_dir)]
+            if branch:
+                cmd = ["git", "clone", "--branch", branch, repo_url, str(repo_dir)]
+            await asyncio.to_thread(cls._run_git, cmd, None)
+
+        # obtain commit hash
+        try:
+            commit = await asyncio.to_thread(
+                cls._run_git, ["git", "rev-parse", "HEAD"], repo_dir
+            )
+        except Exception as e:
+            logger.warning(f"Unable to get commit hash for {repo_dir}: {e!r}")
+            commit = None
+
+        return _RepoInfo(repo_url=repo_url, branch=branch, local_dir=repo_dir, commit_hash=commit)
+
+    @staticmethod
+    def _match_excludes(path: Path, exclude_glob: Optional[list[str] | str]) -> bool:
+        if not exclude_glob:
+            return False
+        patterns = exclude_glob if isinstance(exclude_glob, list) else [exclude_glob]
+        for pat in patterns:
+            if path.match(pat):
+                return True
+        return False
+
+    async def _ensure_collection_id(self, collection_id: Optional[str], collection_name: Optional[str]) -> Optional[str]:
+        if collection_id:
+            return collection_id
+        if not collection_name:
+            return None
+        try:
+            resp = await self.r2r_client.collections.retrieve_by_name(collection_name)
+            return str(resp.results.id)
+        except Exception as e:
+            logger.info(f"Collection '{collection_name}' not found, creating new. Error: {e!r}")
+            try:
+                created = await self.r2r_client.collections.create(collection_name)
+                return str(created.results.id)
+            except Exception as ie:
+                logger.error(f"Failed to create collection '{collection_name}': {ie!r}")
+                return None
+
+    @async_timeout(int(os.getenv("R2R_GIT_INGEST_TIMEOUT", "600")))
+    async def execute(
+        self,
+        repo_url: str,
+        branch: Optional[str] = None,
+        dest_path: Optional[str] = None,
+        include_glob: str = "**/*.md",
+        exclude_glob: Optional[list[str] | str] = None,
+        collection_id: Optional[str] = None,
+        collection_name: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        *args,
+        **kwargs,
+    ) -> AggregateSearchResult:
+        # Step 1: clone or update the repo
+        try:
+            repo_info = await self._clone_or_update_repo(repo_url, branch, dest_path)
+        except Exception as e:
+            logger.error(f"Failed to clone or update repo {repo_url}: {e!r}")
+            return AggregateSearchResult(
+                generic_tool_result=[
+                    GitIngestResult(
+                        file_path="",
+                        repo_url=repo_url,
+                        branch=branch,
+                        commit_hash=None,
+                        error=repr(e),
+                    )
+                ]
+            )
+
+        # Step 2: find markdown files
+        md_files = [
+            p for p in repo_info.local_dir.glob(include_glob)
+            if p.is_file() and not self._match_excludes(p, exclude_glob)
+        ]
+        # also include .markdown files by default if pattern didn't cover
+        if include_glob == "**/*.md":
+            md_files += [
+                p for p in repo_info.local_dir.glob("**/*.markdown")
+                if p.is_file() and not self._match_excludes(p, exclude_glob)
+            ]
+
+        if not md_files:
+            logger.info(f"No markdown files found in {repo_info.local_dir}.")
+            return AggregateSearchResult(
+                generic_tool_result=[
+                    GitIngestResult(
+                        file_path="",
+                        repo_url=repo_info.repo_url,
+                        branch=repo_info.branch,
+                        commit_hash=repo_info.commit_hash,
+                        ingestion_response=IngestionResponse(
+                            message="No markdown files found to ingest.",
+                            document_id=UUID(int=0),
+                            task_id=UUID(int=0),
+                        ),
+                    )
+                ]
+            )
+
+        # Step 3: ensure collection id if provided by name
+        target_collection_id = await self._ensure_collection_id(collection_id, collection_name)
+
+        # Step 4: ingest files concurrently
+        ingestion_tasks: list[asyncio.Task] = []
+        file_paths: list[str] = []
+        for fpath in md_files:
+            file_paths.append(str(fpath))
+            async with self.r2r_semaphore:
+                doc_metadata = {
+                    "source": "git",
+                    "repo_url": repo_info.repo_url,
+                    "repo_branch": repo_info.branch,
+                    "repo_commit": repo_info.commit_hash,
+                    "repo_path": str(fpath.relative_to(repo_info.local_dir)),
+                }
+                if metadata:
+                    # user-provided metadata overrides defaults on key conflicts
+                    doc_metadata.update(metadata)
+                task = asyncio.create_task(
+                    self.r2r_client.documents.create(
+                        file_path=str(fpath),
+                        collection_ids=[target_collection_id] if target_collection_id else None,
+                        metadata=doc_metadata,
+                    )
+                )
+                ingestion_tasks.append(task)
+                await asyncio.sleep(R2R_SLEEP)
+
+        responses = await asyncio.gather(*ingestion_tasks, return_exceptions=True)
+
+        results: list[GitIngestResult] = []
+        for resp, fpath in zip(responses, file_paths):
+            if isinstance(resp, Exception):
+                logger.error(f"Error ingesting file {fpath}: {resp!r}")
+                results.append(
+                    GitIngestResult(
+                        file_path=fpath,
+                        repo_url=repo_info.repo_url,
+                        branch=repo_info.branch,
+                        commit_hash=repo_info.commit_hash,
+                        error=repr(resp),
+                    )
+                )
+            else:
+                wrapped: WrappedIngestionResponse = resp  # type: ignore
+                results.append(
+                    GitIngestResult(
+                        file_path=fpath,
+                        repo_url=repo_info.repo_url,
+                        branch=repo_info.branch,
+                        commit_hash=repo_info.commit_hash,
+                        ingestion_response=wrapped.results,
+                    )
+                )
+
+        aggregate = AggregateSearchResult(generic_tool_result=results)
+
+        # If context has results collector, add it as other tools do
+        context = self.context
+        if context and hasattr(context, "search_results_collector"):
+            context.search_results_collector.add_aggregate_result(aggregate)
+
+        return aggregate
