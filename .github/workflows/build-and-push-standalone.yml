@@ -14,10 +14,6 @@ env:
   GAR_REPOSITORY: ai-r-d
   IMAGE_NAME: r2r-vllm
 
-permissions:
-  contents: read
-  id-token: write
-
 concurrency:
   group: standalone-docker-${{ github.ref_name }}
   cancel-in-progress: true
@@ -26,6 +22,11 @@ jobs:
   build-and-push:
     name: Build and push Dockerfile.standalone to Google Artifact Registry
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -36,13 +37,21 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          project_id: ${{ vars.PROJECT_ID }}
-          workload_identity_provider: ${{ vars.WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GOOGLE_SERVICE_ACCOUNT }}
+          project_id: ai-r-d-467405
+          workload_identity_provider: projects/159622693030/locations/global/workloadIdentityPools/ga-pool/providers/ai-r-d-provider
+          service_account: github-actions@ai-r-d-467405.iam.gserviceaccount.com
 
       - name: Configure Docker to use gcloud as a credential helper
         run: |
           gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
+
+      - name: Get provider name
+        run: |
+          gcloud iam workload-identity-pools providers list \
+          --workload-identity-pool="ga-pool" \
+          --location="global" \
+          --project="ai-r-d-467405" \
+          --format="table(name, displayName)"
 
       - name: Who am I?
         run: |
