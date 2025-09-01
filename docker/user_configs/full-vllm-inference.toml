@@ -1,5 +1,5 @@
 [app]
-fast_llm = "vllm/fast/RedHatAI/phi-4-quantized.w8a8
+fast_llm = "vllm/fast/RedHatAI/phi-4-quantized.w8a8"
 #fast_llm = "openai/gpt-4.1-mini"
 quality_llm = "vllm/Bedovyy/Qwen3-32B"
 reasoning_llm = ""

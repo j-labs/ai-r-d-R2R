@@ -4,6 +4,7 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar, Optional
 
@@ -15,6 +16,13 @@ from shared import AggregateSearchResult
 from shared.api.models import IngestionResponse, WrappedIngestionResponse
 
 from .utils import async_timeout
+
+
+class GitPlatform(StrEnum):
+    """Supported Git hosting platforms."""
+    GITHUB = "github"
+    BITBUCKET = "bitbucket"
+
 
 # Defaults and timeouts
 GIT_TIMEOUT = int(os.getenv("R2R_GIT_TIMEOUT", "120"))  # seconds
@@ -131,6 +139,56 @@ class GitRepoIngest(Tool):
         return (path / ".git").exists()
 
     @staticmethod
+    def _detect_repo_host(repo_url: str) -> Optional[GitPlatform]:
+        """Detect the Git hosting service from the repository URL."""
+        repo_url_lower = repo_url.lower()
+        if "github.com" in repo_url_lower:
+            return GitPlatform.GITHUB
+        elif "bitbucket.org" in repo_url_lower:
+            return GitPlatform.BITBUCKET
+        return None
+
+    @staticmethod
+    def _inject_github_auth(repo_url: str) -> str:
+        """Inject GitHub authentication token into repository URL."""
+        token = os.getenv("GITHUB_API_TOKEN")
+        if not token:
+            return repo_url
+
+        # Convert https://github.com/user/repo.git to https://token@github.com/user/repo.git
+        if repo_url.startswith("https://github.com/"):
+            return repo_url.replace("https://github.com/", f"https://{token}@github.com/")
+        elif repo_url.startswith("https://www.github.com/"):
+            return repo_url.replace("https://www.github.com/", f"https://{token}@www.github.com/")
+        return repo_url
+
+    @staticmethod
+    def _inject_bitbucket_auth(repo_url: str) -> str:
+        """Inject Bitbucket authentication token into repository URL."""
+        token = os.getenv("BITBUCKET_API_TOKEN")
+        if not token:
+            return repo_url
+
+        # Convert https://bitbucket.org/workspace/repo.git to https://x-token-auth:token@bitbucket.org/workspace/repo.git
+        if repo_url.startswith("https://bitbucket.org/"):
+            return repo_url.replace("https://bitbucket.org/", f"https://x-token-auth:{token}@bitbucket.org/")
+        elif repo_url.startswith("https://www.bitbucket.org/"):
+            return repo_url.replace("https://www.bitbucket.org/", f"https://x-token-auth:{token}@www.bitbucket.org/")
+        return repo_url
+
+    @staticmethod
+    def _inject_auth_token(repo_url: str) -> str:
+        """Inject authentication token into repository URL if available."""
+        host = GitRepoIngest._detect_repo_host(repo_url)
+
+        if host == GitPlatform.GITHUB:
+            return GitRepoIngest._inject_github_auth(repo_url)
+        elif host == GitPlatform.BITBUCKET:
+            return GitRepoIngest._inject_bitbucket_auth(repo_url)
+
+        return repo_url
+
+    @staticmethod
     def _run_git(cmd: list[str], cwd: Optional[Path] = None, timeout: int = GIT_TIMEOUT) -> str:
         logger.debug(f"Running git command: {' '.join(shlex.quote(c) for c in cmd)} in {cwd}")
         proc = subprocess.run(
@@ -153,9 +211,20 @@ class GitRepoIngest(Tool):
         base_dir.mkdir(parents=True, exist_ok=True)
         repo_dir = base_dir / cls._repo_dir_from_url(repo_url)
 
+        # Get authenticated URL for clone/fetch operations
+        auth_repo_url = cls._inject_auth_token(repo_url)
+
         if repo_dir.exists() and cls._is_git_repo(repo_dir):
             # update
             logger.info(f"Updating existing repo at {repo_dir}")
+
+            # Update remote URL with authentication if token is available and URL changed
+            if auth_repo_url != repo_url:
+                try:
+                    await asyncio.to_thread(cls._run_git, ["git", "remote", "set-url", "origin", auth_repo_url], repo_dir)
+                except Exception as e:
+                    logger.warning(f"Failed to update remote URL with auth token: {e!r}")
+
             await asyncio.to_thread(cls._run_git, ["git", "fetch", "--all"], repo_dir)
             if branch:
                 # ensure branch exists locally
@@ -166,12 +235,12 @@ class GitRepoIngest(Tool):
         else:
             # clone
             logger.info(f"Cloning repo {repo_url} into {repo_dir}")
-            cmd = ["git", "clone", repo_url, str(repo_dir)]
+            cmd = ["git", "clone", auth_repo_url, str(repo_dir)]
             if branch:
-                cmd = ["git", "clone", "--branch", branch, repo_url, str(repo_dir)]
+                cmd = ["git", "clone", "--branch", branch, auth_repo_url, str(repo_dir)]
             await asyncio.to_thread(cls._run_git, cmd, None)
 
-        # obtain commit hash
+        # get commit hash
         try:
             commit = await asyncio.to_thread(
                 cls._run_git, ["git", "rev-parse", "HEAD"], repo_dir
@@ -245,7 +314,7 @@ class GitRepoIngest(Tool):
             p for p in repo_info.local_dir.glob(include_glob)
             if p.is_file() and not self._match_excludes(p, exclude_glob)
         ]
-        # also include .markdown files by default if pattern didn't cover
+        # also include .markdown files by default if a pattern didn't cover
         if include_glob == "**/*.md":
             md_files += [
                 p for p in repo_info.local_dir.glob("**/*.markdown")
@@ -328,7 +397,7 @@ class GitRepoIngest(Tool):
 
         aggregate = AggregateSearchResult(generic_tool_result=results)
 
-        # If context has results collector, add it as other tools do
+        # If context has a result collector, add it as other tools do
         context = self.context
         if context and hasattr(context, "search_results_collector"):
             context.search_results_collector.add_aggregate_result(aggregate)
