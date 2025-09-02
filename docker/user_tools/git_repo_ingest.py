@@ -10,8 +10,8 @@ from typing import ClassVar, Optional
 
 from core import logger
 from pydantic import BaseModel
-from uuid import UUID
-from r2r import Tool, R2RAsyncClient
+from uuid import UUID, uuid5, NAMESPACE_URL
+from r2r import Tool, R2RAsyncClient, R2RException
 from shared import AggregateSearchResult
 from shared.api.models import IngestionResponse, WrappedIngestionResponse
 
@@ -310,6 +310,8 @@ class GitRepoIngest(Tool):
             )
 
         # Step 2: find markdown files
+        # Already ingested files are effectively skipped by using a deterministic document ID
+        # per repo_url@commit:relative_path and catching R2RException 409 conflicts during ingestion.
         md_files = [
             p for p in repo_info.local_dir.glob(include_glob)
             if p.is_file() and not self._match_excludes(p, exclude_glob)
@@ -345,15 +347,21 @@ class GitRepoIngest(Tool):
         # Step 4: ingest files concurrently
         ingestion_tasks: list[asyncio.Task] = []
         file_paths: list[str] = []
+        document_ids: list[UUID] = []
         for fpath in md_files:
             file_paths.append(str(fpath))
+            # Deterministic ID to detect if this exact file revision was already ingested
+            rel_path = str(fpath.relative_to(repo_info.local_dir))
+            deterministic_str = f"{repo_info.repo_url}@{repo_info.commit_hash}:{rel_path}"
+            doc_id = uuid5(NAMESPACE_URL, deterministic_str)
+            document_ids.append(doc_id)
             async with self.r2r_semaphore:
                 doc_metadata = {
                     "source": "git",
                     "repo_url": repo_info.repo_url,
                     "repo_branch": repo_info.branch,
                     "repo_commit": repo_info.commit_hash,
-                    "repo_path": str(fpath.relative_to(repo_info.local_dir)),
+                    "repo_path": rel_path,
                 }
                 if metadata:
                     # user-provided metadata overrides defaults on key conflicts
@@ -361,6 +369,7 @@ class GitRepoIngest(Tool):
                 task = asyncio.create_task(
                     self.r2r_client.documents.create(
                         file_path=str(fpath),
+                        id=str(doc_id),
                         collection_ids=[target_collection_id] if target_collection_id else None,
                         metadata=doc_metadata,
                     )
@@ -371,8 +380,30 @@ class GitRepoIngest(Tool):
         responses = await asyncio.gather(*ingestion_tasks, return_exceptions=True)
 
         results: list[GitIngestResult] = []
-        for resp, fpath in zip(responses, file_paths):
+        for idx, resp in enumerate(responses):
+            fpath = file_paths[idx]
+            doc_id = document_ids[idx] if idx < len(document_ids) else UUID(int=0)
             if isinstance(resp, Exception):
+                # If already exists, mark as skipped rather than error
+                if isinstance(resp, R2RException):
+                    msg_l = (resp.message or "").lower()
+                    if resp.status_code == 409 and (
+                        "already exists" in msg_l or "already ingested" in msg_l
+                    ):
+                        results.append(
+                            GitIngestResult(
+                                file_path=fpath,
+                                repo_url=repo_info.repo_url,
+                                branch=repo_info.branch,
+                                commit_hash=repo_info.commit_hash,
+                                ingestion_response=IngestionResponse(
+                                    message="Skipped - document already ingested.",
+                                    document_id=doc_id,
+                                    task_id=UUID(int=0),
+                                ),
+                            )
+                        )
+                        continue
                 logger.error(f"Error ingesting file {fpath}: {resp!r}")
                 results.append(
                     GitIngestResult(
