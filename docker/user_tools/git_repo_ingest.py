@@ -279,11 +279,9 @@ class GitRepoIngest(Tool):
                 logger.error(f"Failed to create collection '{collection_name}': {ie!r}")
                 return None
 
-    async def _assign_access_to_existing(self, document_id: UUID, target_collection_id: Optional[str]) -> None:
+    async def _assign_access_to_existing(self, document_id: UUID) -> None:
         """Ensure the current user has access to the existing document by adding the
         document to the user's default collection.
-
-        Note: target_collection_id is intentionally ignored as per the requirement.
         """
         # Get current user id
         try:
