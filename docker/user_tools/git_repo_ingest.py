@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from uuid import UUID, uuid5, NAMESPACE_URL
 from r2r import Tool, R2RAsyncClient, R2RException
 from shared import AggregateSearchResult
+from shared.utils.base_utils import generate_default_user_collection_id
 from shared.api.models import IngestionResponse, WrappedIngestionResponse
 
 from .utils import async_timeout
@@ -278,6 +279,45 @@ class GitRepoIngest(Tool):
                 logger.error(f"Failed to create collection '{collection_name}': {ie!r}")
                 return None
 
+    async def _assign_access_to_existing(self, document_id: UUID, target_collection_id: Optional[str]) -> None:
+        """Ensure the current user has access to the existing document by adding the
+        document to the user's default collection.
+
+        Note: target_collection_id is intentionally ignored as per the requirement.
+        """
+        # Get current user id
+        try:
+            me = await self.r2r_client.users.me()
+            user_uuid = me.results.id
+        except Exception as e:
+            logger.error(f"Failed to retrieve current user for permission assignment: {e!r}")
+            return
+
+        # Compute default collection ID deterministically for the user
+        try:
+            default_collection_id = str(generate_default_user_collection_id(user_uuid))
+        except Exception as e:
+            logger.error(f"Failed to compute default collection id for user {user_uuid}: {e!r}")
+            return
+
+        # Add the document to the user's default collection
+        try:
+            await self.r2r_client.collections.add_document(default_collection_id, str(document_id))
+        except R2RException as e:
+            msg_l = (e.message or "").lower()
+            if e.status_code == 409 and ("already" in msg_l or "exists" in msg_l):
+                logger.debug(
+                    f"Document {document_id} already present in user's default collection {default_collection_id}"
+                )
+                return
+            logger.info(
+                f"Could not add existing document {document_id} to user's default collection {default_collection_id}: {e!r}"
+            )
+        except Exception as e:
+            logger.info(
+                f"Unexpected error while adding document {document_id} to default collection {default_collection_id}: {e!r}"
+            )
+
     @async_timeout(int(os.getenv("R2R_GIT_INGEST_TIMEOUT", "600")))
     async def execute(
         self,
@@ -390,6 +430,10 @@ class GitRepoIngest(Tool):
                     if resp.status_code == 409 and (
                         "already exists" in msg_l or "already ingested" in msg_l
                     ):
+                        try:
+                            await self._assign_access_to_existing(doc_id, target_collection_id)
+                        except Exception as e:
+                            logger.warning(f"Failed to assign access for existing document {doc_id}: {e!r}")
                         results.append(
                             GitIngestResult(
                                 file_path=fpath,
@@ -397,7 +441,7 @@ class GitRepoIngest(Tool):
                                 branch=repo_info.branch,
                                 commit_hash=repo_info.commit_hash,
                                 ingestion_response=IngestionResponse(
-                                    message="Skipped - document already ingested.",
+                                    message="Skipped - document already ingested. Added to user's default collection.",
                                     document_id=doc_id,
                                     task_id=UUID(int=0),
                                 ),
