@@ -58,12 +58,11 @@ class GitRepoIngest(Tool):
     - Clone or update a repository from a generic Git host (GitHub/Bitbucket/etc.)
     - Select branch to checkout
     - Find and ingest all Markdown files using R2R's ingestion API
-    - Optionally target a specific collection by ID or name
 
     Usage notes:
     - Ensure R2R API base URL and auth are configured as for other tools.
     - For large repositories, ingestion is concurrent and rate-limited by env R2R_INGESTION_CONCURRENCY.
-    - You can restrict files via include_glob / exclude_glob.
+    - You can exclude files via exclude_glob.
     """
 
     r2r_client: ClassVar[R2RAsyncClient] = R2RAsyncClient()
@@ -87,14 +86,6 @@ class GitRepoIngest(Tool):
                         "oneOf": [{"type": "string"}, {"type": "null"}],
                         "description": "Branch to checkout (default repo default)",
                     },
-                    "dest_path": {
-                        "oneOf": [{"type": "string"}, {"type": "null"}],
-                        "description": f"Local destination directory (default {DEFAULT_DEST})",
-                    },
-                    "include_glob": {
-                        "type": "string",
-                        "description": "Glob pattern to include (default '**/*.md')",
-                    },
                     "exclude_glob": {
                         "oneOf": [
                             {"type": "string"},
@@ -102,14 +93,6 @@ class GitRepoIngest(Tool):
                             {"type": "null"},
                         ],
                         "description": "Glob(s) to exclude (optional)",
-                    },
-                    "collection_id": {
-                        "oneOf": [{"type": "string"}, {"type": "null"}],
-                        "description": "Target collection ID to attach documents to (optional)",
-                    },
-                    "collection_name": {
-                        "oneOf": [{"type": "string"}, {"type": "null"}],
-                        "description": "Target collection name (will be created if missing)",
                     },
                     "metadata": {
                         "oneOf": [
@@ -206,9 +189,9 @@ class GitRepoIngest(Tool):
 
     @classmethod
     async def _clone_or_update_repo(
-        cls, repo_url: str, branch: Optional[str], dest_path: Optional[str]
+        cls, repo_url: str, branch: Optional[str]
     ) -> _RepoInfo:
-        base_dir = Path(dest_path or DEFAULT_DEST)
+        base_dir = Path(DEFAULT_DEST)
         base_dir.mkdir(parents=True, exist_ok=True)
         repo_dir = base_dir / cls._repo_dir_from_url(repo_url)
 
@@ -262,22 +245,6 @@ class GitRepoIngest(Tool):
                 return True
         return False
 
-    async def _ensure_collection_id(self, collection_id: Optional[str], collection_name: Optional[str]) -> Optional[str]:
-        if collection_id:
-            return collection_id
-        if not collection_name:
-            return None
-        try:
-            resp = await self.r2r_client.collections.retrieve_by_name(collection_name)
-            return str(resp.results.id)
-        except Exception as e:
-            logger.info(f"Collection '{collection_name}' not found, creating new. Error: {e!r}")
-            try:
-                created = await self.r2r_client.collections.create(collection_name)
-                return str(created.results.id)
-            except Exception as ie:
-                logger.error(f"Failed to create collection '{collection_name}': {ie!r}")
-                return None
 
     async def _assign_access_to_existing(self, document_id: UUID) -> None:
         """Ensure the current user has access to the existing document by adding the
@@ -321,18 +288,14 @@ class GitRepoIngest(Tool):
         self,
         repo_url: str,
         branch: Optional[str] = None,
-        dest_path: Optional[str] = None,
-        include_glob: str = "**/*.md",
         exclude_glob: Optional[list[str] | str] = None,
-        collection_id: Optional[str] = None,
-        collection_name: Optional[str] = None,
         metadata: Optional[dict] = None,
         *args,
         **kwargs,
     ) -> AggregateSearchResult:
         # Step 1: clone or update the repo
         try:
-            repo_info = await self._clone_or_update_repo(repo_url, branch, dest_path)
+            repo_info = await self._clone_or_update_repo(repo_url, branch)
         except Exception as e:
             logger.error(f"Failed to clone or update repo {repo_url}: {e!r}")
             return AggregateSearchResult(
@@ -351,15 +314,13 @@ class GitRepoIngest(Tool):
         # Already ingested files are effectively skipped by using a deterministic document ID
         # per repo_url@commit:relative_path and catching R2RException 409 conflicts during ingestion.
         md_files = [
-            p for p in repo_info.local_dir.glob(include_glob)
+            p for p in repo_info.local_dir.glob("**/*.md")
             if p.is_file() and not self._match_excludes(p, exclude_glob)
         ]
-        # also include .markdown files by default if a pattern didn't cover
-        if include_glob == "**/*.md":
-            md_files += [
-                p for p in repo_info.local_dir.glob("**/*.markdown")
-                if p.is_file() and not self._match_excludes(p, exclude_glob)
-            ]
+        md_files += [
+            p for p in repo_info.local_dir.glob("**/*.markdown")
+            if p.is_file() and not self._match_excludes(p, exclude_glob)
+        ]
 
         if not md_files:
             logger.info(f"No markdown files found in {repo_info.local_dir}.")
@@ -379,10 +340,7 @@ class GitRepoIngest(Tool):
                 ]
             )
 
-        # Step 3: ensure collection id if provided by name
-        target_collection_id = await self._ensure_collection_id(collection_id, collection_name)
-
-        # Step 4: ingest files concurrently
+        # Step 3: ingest files concurrently
         ingestion_tasks: list[asyncio.Task] = []
         file_paths: list[str] = []
         document_ids: list[UUID] = []
@@ -408,7 +366,6 @@ class GitRepoIngest(Tool):
                     self.r2r_client.documents.create(
                         file_path=str(fpath),
                         id=str(doc_id),
-                        collection_ids=[target_collection_id] if target_collection_id else None,
                         metadata=doc_metadata,
                     )
                 )
@@ -429,7 +386,7 @@ class GitRepoIngest(Tool):
                         "already exists" in msg_l or "already ingested" in msg_l
                     ):
                         try:
-                            await self._assign_access_to_existing(doc_id, target_collection_id)
+                            await self._assign_access_to_existing(doc_id)
                         except Exception as e:
                             logger.warning(f"Failed to assign access for existing document {doc_id}: {e!r}")
                         results.append(
