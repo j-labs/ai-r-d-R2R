@@ -174,9 +174,10 @@ class GitRepoIngest(Tool):
 
     @staticmethod
     def _run_git(cmd: list[str], cwd: Optional[Path] = None, timeout: int = GIT_TIMEOUT) -> str:
-        logger.debug(f"Running git command: {' '.join(shlex.quote(c) for c in cmd)} in {cwd}")
+        git_cmd = ["git"] + cmd
+        logger.debug(f"Running git command: {' '.join(shlex.quote(c) for c in git_cmd)} in {cwd}")
         proc = subprocess.run(
-            cmd,
+            git_cmd,
             cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -184,7 +185,7 @@ class GitRepoIngest(Tool):
             text=True,
         )
         if proc.returncode != 0:
-            raise RuntimeError(f"Git command failed: {' '.join(cmd)}\nSTDERR: {proc.stderr.strip()}")
+            raise RuntimeError(f"Git command failed: {' '.join(git_cmd)}\nSTDERR: {proc.stderr.strip()}")
         return proc.stdout.strip()
 
     @classmethod
@@ -205,29 +206,29 @@ class GitRepoIngest(Tool):
             # Update remote URL with authentication if token is available and URL changed
             if auth_repo_url != repo_url:
                 try:
-                    await asyncio.to_thread(cls._run_git, ["git", "remote", "set-url", "origin", auth_repo_url], repo_dir)
+                    await asyncio.to_thread(cls._run_git, ["remote", "set-url", "origin", auth_repo_url], repo_dir)
                 except Exception as e:
                     logger.warning(f"Failed to update remote URL with auth token: {e!r}")
 
-            await asyncio.to_thread(cls._run_git, ["git", "fetch", "--all"], repo_dir)
+            await asyncio.to_thread(cls._run_git, ["fetch", "--all"], repo_dir)
             if branch:
                 # ensure branch exists locally
-                await asyncio.to_thread(cls._run_git, ["git", "checkout", branch], repo_dir)
-                await asyncio.to_thread(cls._run_git, ["git", "pull", "origin", branch], repo_dir)
+                await asyncio.to_thread(cls._run_git, ["checkout", branch], repo_dir)
+                await asyncio.to_thread(cls._run_git, ["pull", "origin", branch], repo_dir)
             else:
-                await asyncio.to_thread(cls._run_git, ["git", "pull"], repo_dir)
+                await asyncio.to_thread(cls._run_git, ["pull"], repo_dir)
         else:
             # clone
             logger.info(f"Cloning repo {repo_url} into {repo_dir}")
-            cmd = ["git", "clone", auth_repo_url, str(repo_dir)]
+            cmd = ["clone", auth_repo_url, str(repo_dir)]
             if branch:
-                cmd = ["git", "clone", "--branch", branch, auth_repo_url, str(repo_dir)]
+                cmd = ["clone", "--branch", branch, auth_repo_url, str(repo_dir)]
             await asyncio.to_thread(cls._run_git, cmd, None)
 
         # get commit hash
         try:
             commit = await asyncio.to_thread(
-                cls._run_git, ["git", "rev-parse", "HEAD"], repo_dir
+                cls._run_git, ["rev-parse", "HEAD"], repo_dir
             )
         except Exception as e:
             logger.warning(f"Unable to get commit hash for {repo_dir}: {e!r}")
