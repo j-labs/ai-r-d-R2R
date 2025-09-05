@@ -30,6 +30,7 @@ GIT_TIMEOUT = int(os.getenv("R2R_GIT_TIMEOUT", "120"))  # seconds
 R2R_SLEEP = float(os.getenv("R2R_INGESTION_SLEEP", "0.25"))
 MAX_CONCURRENCY = int(os.getenv("R2R_INGESTION_CONCURRENCY", "10"))
 DEFAULT_DEST = os.getenv("R2R_GIT_DEST", "/tmp/r2r_repos")
+AVAILABLE_REPOS = os.getenv("R2R_AVAILABLE_REPOS", "").split(",")
 
 
 @dataclass
@@ -80,7 +81,7 @@ class GitRepoIngest(Tool):
                 "properties": {
                     "repo_url": {
                         "type": "string",
-                        "description": "Git repository URL (HTTPS or SSH)",
+                        "description": f"Git repository URL (HTTPS). Must be one of: {AVAILABLE_REPOS}.",
                     },
                     "branch": {
                         "oneOf": [{"type": "string"}, {"type": "null"}],
@@ -294,6 +295,22 @@ class GitRepoIngest(Tool):
         *args,
         **kwargs,
     ) -> AggregateSearchResult:
+        # Validate if repo_url is in AVAILABLE_REPOS
+        if AVAILABLE_REPOS and repo_url not in AVAILABLE_REPOS:
+            error_msg = f"Repository {repo_url} is not in the list of available repositories: {AVAILABLE_REPOS}"
+            logger.error(error_msg)
+            return AggregateSearchResult(
+                generic_tool_result=[
+                    GitIngestResult(
+                        file_path="",
+                        repo_url=repo_url,
+                        branch=branch,
+                        commit_hash=None,
+                        error=error_msg,
+                    )
+                ]
+            )
+
         # Step 1: clone or update the repo
         try:
             repo_info = await self._clone_or_update_repo(repo_url, branch)
