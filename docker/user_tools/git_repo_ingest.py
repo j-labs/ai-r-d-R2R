@@ -185,22 +185,42 @@ class GitRepoIngest(Tool):
     @staticmethod
     def _run_git(cmd: list[str], cwd: Optional[Path] = None, timeout: int = GIT_TIMEOUT) -> str:
         git_cmd = ["git"] + cmd
-        logger.debug(f"Running git command: {' '.join(shlex.quote(c) for c in git_cmd)} in {cwd}")
-        proc = subprocess.run(
-            git_cmd,
-            cwd=str(cwd) if cwd else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            text=True,
-        )
+        logger.info(f"Running git command: {' '.join(shlex.quote(c) for c in git_cmd)} in {cwd}")
+
+        # Check if git command exists
+        try:
+            subprocess.run(["which", "git"], check=True, capture_output=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise RuntimeError("Git command not found. Please ensure git is installed in the container.")
+
+        # Check if working directory exists
+        if cwd and not cwd.exists():
+            raise RuntimeError(f"Working directory {cwd} does not exist")
+
+        try:
+            proc = subprocess.run(
+                git_cmd,
+                cwd=str(cwd) if cwd else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                text=True,
+            )
+        except FileNotFoundError as e:
+            logger.error(f"Command not found: {' '.join(git_cmd)}. Error: {e}")
+            raise RuntimeError(f"Git command not found: {e}")
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"Git command timed out after {timeout}s: {' '.join(git_cmd)}")
+            raise RuntimeError(f"Git command timed out: {e}")
+
         if proc.returncode != 0:
+            logger.error(f"Git command failed: {' '.join(git_cmd)}\nSTDERR: {proc.stderr.strip()}")
             raise RuntimeError(f"Git command failed: {' '.join(git_cmd)}\nSTDERR: {proc.stderr.strip()}")
         return proc.stdout.strip()
 
     @classmethod
     async def _clone_or_update_repo(
-        cls, repo_url: str, branch: Optional[str]
+            cls, repo_url: str, branch: Optional[str]
     ) -> _RepoInfo:
         base_dir = Path(DEFAULT_DEST)
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -230,10 +250,10 @@ class GitRepoIngest(Tool):
         else:
             # clone
             logger.info(f"Cloning repo {repo_url} into {repo_dir}")
-            cmd = ["clone", auth_repo_url, str(repo_dir)]
+            cmd = ["clone", auth_repo_url]
             if branch:
-                cmd = ["clone", "--branch", branch, auth_repo_url, str(repo_dir)]
-            await asyncio.to_thread(cls._run_git, cmd, None)
+                cmd = ["clone", "--branch", branch, auth_repo_url]
+            await asyncio.to_thread(cls._run_git, cmd, base_dir)
 
         # get commit hash
         try:
@@ -306,14 +326,14 @@ class GitRepoIngest(Tool):
 
     @async_timeout(int(os.getenv("R2R_GIT_INGEST_TIMEOUT", "600")))
     async def execute(
-        self,
-        repo_url: str,
-        branch: Optional[str] = None,
-        exclude_glob: Optional[list[str] | str] = None,
-        include_glob: Optional[list[str] | str] = None,
-        metadata: Optional[dict] = None,
-        *args,
-        **kwargs,
+            self,
+            repo_url: str,
+            branch: Optional[str] = None,
+            exclude_glob: Optional[list[str] | str] = None,
+            include_glob: Optional[list[str] | str] = None,
+            metadata: Optional[dict] = None,
+            *args,
+            **kwargs,
     ) -> AggregateSearchResult:
         # Validate if repo_url is in AVAILABLE_REPOS
         if AVAILABLE_REPOS and repo_url not in AVAILABLE_REPOS:
@@ -360,6 +380,10 @@ class GitRepoIngest(Tool):
             if p.is_file() and self._match_includes(p, include_glob) and not self._match_excludes(p, exclude_glob)
         ]
 
+        logger.info(
+            f"Found {len(md_files)} markdown files in {repo_info.repo_url} given parameters: branch={branch}, "
+            f"exclude_glob={exclude_glob}, include_glob={include_glob}."
+        )
         if not md_files:
             logger.info(f"No markdown files found in {repo_info.local_dir}.")
             return AggregateSearchResult(
@@ -421,7 +445,7 @@ class GitRepoIngest(Tool):
                 if isinstance(resp, R2RException):
                     msg_l = (resp.message or "").lower()
                     if resp.status_code == 409 and (
-                        "already exists" in msg_l or "already ingested" in msg_l
+                            "already exists" in msg_l or "already ingested" in msg_l
                     ):
                         try:
                             await self._assign_access_to_existing(doc_id)
