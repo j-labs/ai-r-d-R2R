@@ -74,7 +74,8 @@ class GitRepoIngest(Tool):
             name="git_repo_ingest",
             description=(
                 "Clone or update a Git repository and ingest all Markdown (.md) files into R2R. "
-                "Use this to sync documentation / blogpost repos (GitHub/Bitbucket/etc.) with the R2R knowledge base."
+                "Use this to sync documentation / blogpost repos (GitHub/Bitbucket/etc.) with the R2R knowledge base. "
+                "You can filter files using include_glob and exclude_glob patterns."
             ),
             parameters={
                 "type": "object",
@@ -94,6 +95,14 @@ class GitRepoIngest(Tool):
                             {"type": "null"},
                         ],
                         "description": "Glob(s) to exclude (optional)",
+                    },
+                    "include_glob": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                            {"type": "null"},
+                        ],
+                        "description": "Glob(s) to include (optional). If specified, only files matching these patterns will be considered.",
                     },
                     "metadata": {
                         "oneOf": [
@@ -247,6 +256,16 @@ class GitRepoIngest(Tool):
                 return True
         return False
 
+    @staticmethod
+    def _match_includes(path: Path, include_glob: Optional[list[str] | str]) -> bool:
+        if not include_glob:
+            return True  # If no include patterns specified, include all files
+        patterns = include_glob if isinstance(include_glob, list) else [include_glob]
+        for pat in patterns:
+            if path.match(pat):
+                return True
+        return False
+
 
     async def _assign_access_to_existing(self, document_id: UUID) -> None:
         """Ensure the current user has access to the existing document by adding the
@@ -291,6 +310,7 @@ class GitRepoIngest(Tool):
         repo_url: str,
         branch: Optional[str] = None,
         exclude_glob: Optional[list[str] | str] = None,
+        include_glob: Optional[list[str] | str] = None,
         metadata: Optional[dict] = None,
         *args,
         **kwargs,
@@ -333,11 +353,11 @@ class GitRepoIngest(Tool):
         # per repo_url@commit:relative_path and catching R2RException 409 conflicts during ingestion.
         md_files = [
             p for p in repo_info.local_dir.glob("**/*.md")
-            if p.is_file() and not self._match_excludes(p, exclude_glob)
+            if p.is_file() and self._match_includes(p, include_glob) and not self._match_excludes(p, exclude_glob)
         ]
         md_files += [
             p for p in repo_info.local_dir.glob("**/*.markdown")
-            if p.is_file() and not self._match_excludes(p, exclude_glob)
+            if p.is_file() and self._match_includes(p, include_glob) and not self._match_excludes(p, exclude_glob)
         ]
 
         if not md_files:
