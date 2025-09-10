@@ -1,4 +1,5 @@
 import asyncio
+import fnmatch
 import os
 import re
 import shlex
@@ -267,24 +268,24 @@ class GitRepoIngest(Tool):
         return _RepoInfo(repo_url=repo_url, branch=branch, local_dir=repo_dir, commit_hash=commit)
 
     @staticmethod
-    def _match_excludes(path: Path, exclude_glob: Optional[list[str] | str]) -> bool:
-        if not exclude_glob:
-            return False
-        patterns = exclude_glob if isinstance(exclude_glob, list) else [exclude_glob]
+    def _glob_matches(glob_pattern: str | list[str], path: Path) -> bool:
+        patterns = glob_pattern if isinstance(glob_pattern, list) else [glob_pattern]
+        path_str = str(path)
         for pat in patterns:
-            if path.match(pat):
+            if fnmatch.fnmatch(path_str, pat):
                 return True
         return False
 
-    @staticmethod
-    def _match_includes(path: Path, include_glob: Optional[list[str] | str]) -> bool:
-        if not include_glob:
-            return True  # If no include patterns specified, include all files
-        patterns = include_glob if isinstance(include_glob, list) else [include_glob]
-        for pat in patterns:
-            if path.match(pat):
-                return True
-        return False
+    def _match_excludes(self, path: Path, glob_pattern: Optional[list[str] | str]) -> bool:
+        if not glob_pattern:
+            return False  # if no exclude patterns specified, exclude nothing
+        return self._glob_matches(glob_pattern, path)
+
+
+    def _match_includes(self, path: Path, glob_pattern: Optional[list[str] | str]) -> bool:
+        if not glob_pattern:
+            return True  # if no include patterns specified, include all files
+        return self._glob_matches(glob_pattern, path)
 
 
     async def _assign_access_to_existing(self, document_id: UUID) -> None:
@@ -424,6 +425,11 @@ class GitRepoIngest(Tool):
                 if metadata:
                     # user-provided metadata overrides defaults on key conflicts
                     doc_metadata.update(metadata)
+
+                # Create prefixed filename using relative path from repo root
+                prefixed_filename = f"{rel_path.replace('/', '_')}_{fpath.name}"
+                doc_metadata["title"] = prefixed_filename
+
                 task = asyncio.create_task(
                     self.r2r_client.documents.create(
                         file_path=str(fpath),
