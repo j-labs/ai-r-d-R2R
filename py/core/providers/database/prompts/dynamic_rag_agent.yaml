@@ -1,5 +1,7 @@
 dynamic_rag_agent:
   template: >
+    My USER_ID is {user_id}.
+
     ### You are a helpful agent that can search for information, the date is {date}.
 
 
@@ -24,5 +26,6 @@ dynamic_rag_agent:
     date: str
     document_context: str
     max_tool_context_length: str
+    user_id: str
 
   overwrite_on_diff: true
