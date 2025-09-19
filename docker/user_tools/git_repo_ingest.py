@@ -6,19 +6,23 @@ import shlex
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
+from io import BytesIO
 from pathlib import Path
 from typing import ClassVar, Optional
 
-from core import logger
+from core import logger, R2RProviders
 from pydantic import BaseModel
 from uuid import UUID, uuid5, NAMESPACE_URL
-from r2r import Tool, R2RAsyncClient, R2RException
+from r2r import Tool
+from core.base import R2RException
+from sdk import R2RAsyncClient
 from shared import AggregateSearchResult
 from shared.utils.base_utils import generate_default_user_collection_id
-from shared.api.models import IngestionResponse, WrappedIngestionResponse
+from shared.api.models import IngestionResponse
 
 from .utils import async_timeout
 
+from core.main.config import R2RConfig
 
 class GitPlatform(StrEnum):
     """Supported Git hosting platforms."""
@@ -67,8 +71,11 @@ class GitRepoIngest(Tool):
     - You can exclude files via exclude_glob.
     """
 
+    config: ClassVar[R2RConfig] = R2RConfig.from_toml("/app/r2r.toml")
     r2r_client: ClassVar[R2RAsyncClient] = R2RAsyncClient()
+    r2r_client.users.login(email=config.auth.default_admin_email, password=config.auth.default_admin_password)
     r2r_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(MAX_CONCURRENCY)
+
 
     def __init__(self):
         super().__init__(
@@ -288,28 +295,18 @@ class GitRepoIngest(Tool):
         return self._glob_matches(glob_pattern, path)
 
 
-    async def _assign_access_to_existing(self, document_id: UUID) -> None:
-        """Ensure the current user has access to the existing document by adding the
-        document to the user's default collection.
-        """
-        # Get current user id
-        try:
-            me = await self.r2r_client.users.me()
-            user_uuid = me.results.id
-        except Exception as e:
-            logger.error(f"Failed to retrieve current user for permission assignment: {e!r}")
-            return
+    async def _assign_access_to_existing(self, document_id: UUID, user_id: UUID) -> None:
+        """Ensure the user has access to the existing document by assigning it to their default collection."""
 
-        # Compute default collection ID deterministically for the user
         try:
-            default_collection_id = str(generate_default_user_collection_id(user_uuid))
+            default_collection_id = str(generate_default_user_collection_id(user_id))
         except Exception as e:
-            logger.error(f"Failed to compute default collection id for user {user_uuid}: {e!r}")
+            logger.error(f"Failed to compute default collection id for user {user_id}: {e!r}")
             return
 
         # Add the document to the user's default collection
         try:
-            await self.r2r_client.collections.add_document(default_collection_id, str(document_id))
+            await self.r2r_client.collections.add_document(default_collection_id, document_id)
         except R2RException as e:
             msg_l = (e.message or "").lower()
             if e.status_code == 409 and ("already" in msg_l or "exists" in msg_l):
@@ -329,6 +326,7 @@ class GitRepoIngest(Tool):
     async def execute(
             self,
             repo_url: str,
+            user_id: str,
             branch: Optional[str] = None,
             exclude_glob: Optional[list[str] | str] = None,
             include_glob: Optional[list[str] | str] = None,
@@ -407,6 +405,7 @@ class GitRepoIngest(Tool):
         ingestion_tasks: list[asyncio.Task] = []
         file_paths: list[str] = []
         document_ids: list[UUID] = []
+
         for fpath in md_files:
             file_paths.append(str(fpath))
             # Deterministic ID to detect if this exact file revision was already ingested
@@ -454,7 +453,7 @@ class GitRepoIngest(Tool):
                             "already exists" in msg_l or "already ingested" in msg_l
                     ):
                         try:
-                            await self._assign_access_to_existing(doc_id)
+                            await self._assign_access_to_existing(doc_id, UUID(user_id))
                         except Exception as e:
                             logger.warning(f"Failed to assign access for existing document {doc_id}: {e!r}")
                         results.append(
