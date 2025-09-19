@@ -65,4 +65,4 @@ concurrent_request_limit = 8
     graph_communities_prompt = "graph_communities"
 
 [agent]
-rag_tools = ["arxiv_search", "document_statuses"]
+rag_tools = ["arxiv_search", "document_statuses", "git_repo_ingest"]
