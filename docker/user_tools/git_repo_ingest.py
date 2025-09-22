@@ -91,6 +91,10 @@ class GitRepoIngest(Tool):
                         "type": "string",
                         "description": f"Git repository URL (HTTPS). Must be one of: {AVAILABLE_REPOS}.",
                     },
+                    "user_id": {
+                        "oneOf": [{"type": "string"}, {"type": "null"}],
+                        "description": "User ID for document access management (optional)",
+                    },
                     "branch": {
                         "oneOf": [{"type": "string"}, {"type": "null"}],
                         "description": "Branch to checkout (default repo default)",
@@ -325,7 +329,7 @@ class GitRepoIngest(Tool):
     async def execute(
             self,
             repo_url: str,
-            user_id: str,
+            user_id: Optional[str] = None,
             branch: Optional[str] = None,
             exclude_glob: Optional[list[str] | str] = None,
             include_glob: Optional[list[str] | str] = None,
@@ -450,7 +454,7 @@ class GitRepoIngest(Tool):
                     msg_l = (resp.message or "").lower()
                     if resp.status_code == 409 and (
                             "already exists" in msg_l or "already ingested" in msg_l
-                    ):
+                    ) and user_id is not None:
                         try:
                             await self._assign_access_to_existing(doc_id, UUID(user_id))
                         except Exception as e:

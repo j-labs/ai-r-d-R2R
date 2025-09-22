@@ -1,5 +1,7 @@
 static_rag_agent:
   template: >
+    My USER_ID is {user_id}.
+    
     ### You are a helpful agent that can search for information, the date is {date}.
 
     When asked a question, YOU SHOULD ALWAYS USE YOUR SEARCH TOOL TO ATTEMPT TO SEARCH FOR RELEVANT INFORMATION THAT ANSWERS THE USER QUESTION.
