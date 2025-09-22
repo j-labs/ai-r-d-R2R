@@ -6,11 +6,10 @@ import shlex
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
-from io import BytesIO
 from pathlib import Path
 from typing import ClassVar, Optional
 
-from core import logger, R2RProviders
+from core import logger
 from pydantic import BaseModel
 from uuid import UUID, uuid5, NAMESPACE_URL
 from r2r import Tool
