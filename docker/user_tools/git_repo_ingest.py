@@ -17,7 +17,7 @@ from core.base import R2RException
 from sdk import R2RAsyncClient
 from shared import AggregateSearchResult, DocumentResponse
 from shared.utils.base_utils import generate_default_user_collection_id
-from shared.api.models import IngestionResponse
+from shared.api.models import IngestionResponse, PaginatedR2RResult
 
 from .utils import async_timeout
 
@@ -93,7 +93,7 @@ class GitRepoIngest(Tool):
                     },
                     "user_id": {
                         "oneOf": [{"type": "string"}, {"type": "null"}],
-                        "description": "User ID for document access management (optional)",
+                        "description": "User ID in form of valid UUID for document access management (optional)",
                     },
                     "branch": {
                         "oneOf": [{"type": "string"}, {"type": "null"}],
@@ -333,19 +333,21 @@ class GitRepoIngest(Tool):
 
         while True:
             try:
-                response = await self.r2r_client.documents.list(
+                response: PaginatedR2RResult[list[DocumentResponse]] = await self.r2r_client.documents.list(
                     offset=offset,
-                    limit=limit,
-                    include_summary_embeddings=False  # exclude embedding
+                    limit=limit
                 )
 
                 documents: list[DocumentResponse] = response.results
+                logger.info(
+                    f"Fetched {response.total_entries} documents from R2R database with offset {offset} and limit {limit}."
+                )
                 if not documents:
                     break
 
                 # Extract just the IDs
                 batch_ids = set([str(doc.id) for doc in documents])
-                all_document_ids.union(batch_ids)
+                all_document_ids.update(batch_ids)
 
                 if len(documents) < limit:
                     break
@@ -372,13 +374,14 @@ class GitRepoIngest(Tool):
     ) -> AggregateSearchResult:
         # authenticate tool to the API
         if not self.r2r_client.api_key:
-            login_resp = await self.r2r_client.users.login(
+            await self.r2r_client.users.login(
                 email=self.config.auth.default_admin_email,
                 password=self.config.auth.default_admin_password
             )
-            logger.info(f"Authenticated GitRepoIngest tool with a response: {login_resp}")
+            logger.info("Authenticated GitRepoIngest tool.")
 
         all_document_ids = await self._get_all_document_ids()
+        logger.info(f"Found {len(all_document_ids)} existing documents in R2R database.")
 
         # Validate if repo_url is in AVAILABLE_REPOS
         if AVAILABLE_REPOS and repo_url not in AVAILABLE_REPOS:
@@ -459,7 +462,7 @@ class GitRepoIngest(Tool):
             doc_id = uuid5(NAMESPACE_URL, deterministic_str)
 
             # this will reduce the number of unnecessary requests to R2R
-            if doc_id in all_document_ids:
+            if str(doc_id) in all_document_ids:
                 logger.info(
                     f"Skipping ingestion already ingested file {fpath} with ID {doc_id}. "
                     f"{'Will try to assign access to existing document.' if user_id else ''}"
