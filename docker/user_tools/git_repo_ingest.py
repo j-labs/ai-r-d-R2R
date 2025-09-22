@@ -15,7 +15,7 @@ from uuid import UUID, uuid5, NAMESPACE_URL
 from r2r import Tool
 from core.base import R2RException
 from sdk import R2RAsyncClient
-from shared import AggregateSearchResult
+from shared import AggregateSearchResult, DocumentResponse
 from shared.utils.base_utils import generate_default_user_collection_id
 from shared.api.models import IngestionResponse
 
@@ -81,7 +81,8 @@ class GitRepoIngest(Tool):
             description=(
                 "Clone or update a Git repository and ingest all Markdown (.md) files into R2R. "
                 "Use this to sync documentation / blogpost repos (GitHub/Bitbucket/etc.) with the R2R knowledge base. "
-                "You can filter files using include_glob and exclude_glob patterns."
+                "You can filter files using include_glob and exclude_glob patterns. "
+                "If a file is already present in the R2R database, ingestion will be skipped."
             ),
             parameters={
                 "type": "object",
@@ -324,6 +325,39 @@ class GitRepoIngest(Tool):
                 f"Unexpected error while adding document {document_id} to default collection {default_collection_id}: {e!r}"
             )
 
+    async def _get_all_document_ids(self) -> set[str]:
+        """Get all document IDs from R2R database."""
+        all_document_ids = set()
+        offset = 0
+        limit = 1000
+
+        while True:
+            try:
+                response = await self.r2r_client.documents.list(
+                    offset=offset,
+                    limit=limit,
+                    include_summary_embeddings=False  # exclude embedding
+                )
+
+                documents: list[DocumentResponse] = response.results
+                if not documents:
+                    break
+
+                # Extract just the IDs
+                batch_ids = set([str(doc.id) for doc in documents])
+                all_document_ids.union(batch_ids)
+
+                if len(documents) < limit:
+                    break
+
+                offset += limit
+
+            except Exception as e:
+                logger.error(f"Failed to fetch document IDs: {e}")
+                break
+
+        return all_document_ids
+
     @async_timeout(int(os.getenv("R2R_GIT_INGEST_TIMEOUT", "600")))
     async def execute(
             self,
@@ -343,6 +377,8 @@ class GitRepoIngest(Tool):
                 password=self.config.auth.default_admin_password
             )
             logger.info(f"Authenticated GitRepoIngest tool with a response: {login_resp}")
+
+        all_document_ids = await self._get_all_document_ids()
 
         # Validate if repo_url is in AVAILABLE_REPOS
         if AVAILABLE_REPOS and repo_url not in AVAILABLE_REPOS:
@@ -417,11 +453,25 @@ class GitRepoIngest(Tool):
         document_ids: list[UUID] = []
 
         for fpath in md_files:
-            file_paths.append(str(fpath))
             # Deterministic ID to detect if this exact file revision was already ingested
             rel_path = str(fpath.relative_to(repo_info.local_dir))
             deterministic_str = f"{repo_info.repo_url}@{repo_info.commit_hash}:{rel_path}"
             doc_id = uuid5(NAMESPACE_URL, deterministic_str)
+
+            # this will reduce the number of unnecessary requests to R2R
+            if doc_id in all_document_ids:
+                logger.info(
+                    f"Skipping ingestion already ingested file {fpath} with ID {doc_id}. "
+                    f"{'Will try to assign access to existing document.' if user_id else ''}"
+                )
+                if user_id is not None:
+                    try:
+                        await self._assign_access_to_existing(doc_id, UUID(user_id))
+                    except Exception as e:
+                        logger.warning(f"Failed to assign access for existing document {doc_id}: {e!r}")
+                continue
+
+            file_paths.append(str(fpath))
             document_ids.append(doc_id)
             async with self.r2r_semaphore:
                 doc_metadata = {
@@ -457,6 +507,7 @@ class GitRepoIngest(Tool):
             doc_id = document_ids[idx] if idx < len(document_ids) else UUID(int=0)
             if isinstance(resp, Exception):
                 # If already exists, mark as skipped rather than error
+                # It is checked in case some ingestion happened after getting all document IDs
                 if isinstance(resp, R2RException):
                     msg_l = (resp.message or "").lower()
                     if resp.status_code == 409 and (
@@ -485,6 +536,7 @@ class GitRepoIngest(Tool):
                             )
                         )
                         continue
+
                 logger.error(f"Error ingesting file {fpath}: {resp!r}")
                 results.append(
                     GitIngestResult(
