@@ -72,7 +72,6 @@ class GitRepoIngest(Tool):
 
     config: ClassVar[R2RConfig] = R2RConfig.from_toml("/app/r2r.toml")
     r2r_client: ClassVar[R2RAsyncClient] = R2RAsyncClient()
-    r2r_client.users.login(email=config.auth.default_admin_email, password=config.auth.default_admin_password)
     r2r_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(MAX_CONCURRENCY)
 
 
@@ -337,6 +336,14 @@ class GitRepoIngest(Tool):
             *args,
             **kwargs,
     ) -> AggregateSearchResult:
+        # authenticate tool to the API
+        if not self.r2r_client.api_key:
+            login_resp = await self.r2r_client.users.login(
+                email=self.config.auth.default_admin_email,
+                password=self.config.auth.default_admin_password
+            )
+            logger.info(f"Authenticated GitRepoIngest tool with a response: {login_resp}")
+
         # Validate if repo_url is in AVAILABLE_REPOS
         if AVAILABLE_REPOS and repo_url not in AVAILABLE_REPOS:
             error_msg = f"Repository {repo_url} is not in the list of available repositories: {AVAILABLE_REPOS}"
