@@ -1916,7 +1916,7 @@ class RetrievalService(Service):
             # This relies on your "rag_agent_extended" existing with
             # placeholders: date, document_context
             inputs = {"date": date_str, "max_tool_context_length": max_tool_context_length,
-                      "document_context": doc_context_str, "user_id": str(filter_user_id) if filter_user_id else ""}
+                      "document_context": doc_context_str, "user_id": str(filter_user_id) if filter_user_id else "<missing>"}
             system_prompt = await self.providers.database.prompts_handler.get_cached_prompt(
                 # We use custom tooling and a custom agent to handle gemini models
                 prompt_name,
