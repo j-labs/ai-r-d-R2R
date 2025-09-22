@@ -461,11 +461,13 @@ class GitRepoIngest(Tool):
                     msg_l = (resp.message or "").lower()
                     if resp.status_code == 409 and (
                             "already exists" in msg_l or "already ingested" in msg_l
-                    ) and user_id is not None:
-                        try:
-                            await self._assign_access_to_existing(doc_id, UUID(user_id))
-                        except Exception as e:
-                            logger.warning(f"Failed to assign access for existing document {doc_id}: {e!r}")
+                    ):
+                        if user_id is not None:
+                            try:
+                                await self._assign_access_to_existing(doc_id, UUID(user_id))
+                            except Exception as e:
+                                logger.warning(f"Failed to assign access for existing document {doc_id}: {e!r}")
+
                         results.append(
                             GitIngestResult(
                                 file_path=fpath,
@@ -473,7 +475,10 @@ class GitRepoIngest(Tool):
                                 branch=repo_info.branch,
                                 commit_hash=repo_info.commit_hash,
                                 ingestion_response=IngestionResponse(
-                                    message="Skipped - document already ingested. Added to user's default collection.",
+                                    message=(
+                                        f"Skipped - document already ingested. "
+                                        f"{'Added to user default collection.' if user_id else ''}"
+                                    ),
                                     document_id=doc_id,
                                     task_id=UUID(int=0),
                                 ),
